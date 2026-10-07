@@ -1,0 +1,622 @@
+openapi: 3.0.3
+info:
+  title: DROP API
+  version: 1.0.0
+  description: |
+    현재 Spring 컨트롤러와 보안 설정 기준의 전체 17개 API입니다.
+    브랜드/릴리즈 ID는 자동 생성 Long이며 JSON에서는 숫자입니다. slug는 사용하지 않습니다.
+    로그인은 서버 세션(JSESSIONID)을 사용합니다. 로그인 이외의 쓰기 요청은
+    GET /api/auth/csrf에서 받은 headerName/token을 헤더로 전송해야 합니다.
+    enum은 대문자 문자열로 전달합니다. 관리자 role 변경은 다음 로그인부터 반영됩니다.
+    브랜드·릴리즈 생성은 현재 로그인 사용자 모두에게 허용됩니다.
+    일반 오류 응답은 Spring의 설정/콘텐츠 협상에 따라 달라질 수 있어 공통 본문을 고정하지 않습니다.
+servers:
+  - url: http://localhost:8080
+    description: 로컬 Spring 백엔드
+  - url: http://localhost:5173
+    description: 로컬 Vite 프록시
+tags:
+  - name: Auth
+    description: 전체 화면의 로그인 모달, 헤더, 세션 복구
+  - name: Brands
+    description: 홈, Brands(/#brands), Discover(/#discover)
+  - name: Releases
+    description: 홈, Discover, My Drop, 릴리즈 상세 모달
+  - name: Follows
+    description: Brands, My Drop(/#my-drop), 상세 모달의 팔로우
+  - name: Brand Requests
+    description: REQUEST(/#brand-request)의 등록 및 본인 내역
+  - name: Admin Requests
+    description: 관리자 REQUESTS(/#admin-requests)의 검토
+security:
+  - sessionAuth: []
+paths:
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: 로그인 및 세션 생성
+      description: 세션 쿠키를 저장해 이후 요청에 전송합니다. CSRF 예외 API입니다.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginInput'
+            example: {username: admin, password: example-password}
+      responses:
+        '200':
+          description: 로그인 성공. 세션을 생성하거나 기존 세션 ID를 교체합니다.
+          headers:
+            Set-Cookie:
+              description: 브라우저가 보관하는 JSESSIONID 세션 쿠키
+              schema: {type: string}
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example: {id: 8, username: admin, role: ADMIN, admin: true}
+        '400':
+          $ref: '#/components/responses/LoginBadRequest'
+        '401':
+          description: 아이디 또는 비밀번호 불일치
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginError'
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      operationId: getCurrentUser
+      summary: 현재 세션의 사용자와 권한 조회
+      responses:
+        '200':
+          description: 로그인 상태 복구에 사용하는 정보. id는 포함하지 않습니다.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionUser'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/auth/csrf:
+    get:
+      tags: [Auth]
+      operationId: getCsrfToken
+      summary: CSRF 헤더 이름과 토큰 발급
+      security: []
+      description: 토큰을 발급받은 세션 쿠키와 함께 사용합니다. 기본 헤더 이름은 X-CSRF-TOKEN입니다.
+      responses:
+        '200':
+          description: CSRF 정보
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [headerName, token]
+                properties:
+                  headerName: {type: string, example: X-CSRF-TOKEN}
+                  token: {type: string, example: csrf-token}
+  /api/auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: 세션 종료
+      description: Spring Security 로그아웃 필터가 처리합니다. 이미 비로그인인 세션도 유효한 CSRF 토큰으로 호출할 수 있습니다.
+      security:
+        - csrfAuth: []
+      responses:
+        '204': {description: 로그아웃 완료. 응답 본문 없음.}
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/brands:
+    get:
+      tags: [Brands]
+      operationId: listBrands
+      summary: 브랜드 전체 조회
+      description: 페이지 구분 없이 전체 목록을 반환합니다. 프론트는 여기서 숫자 브랜드 ID를 얻습니다.
+      security: []
+      responses:
+        '200':
+          description: 브랜드 목록
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Brand'
+  /api/brands/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Brands]
+      operationId: getBrand
+      summary: 숫자 ID로 브랜드 단건 조회
+      description: 현재 프론트에서 직접 호출하지 않습니다. 없는 ID는 현재 서비스의 미처리 예외로 500을 반환합니다.
+      security: []
+      responses:
+        '200':
+          description: 브랜드 정보
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Brand'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/ServerError'
+  /api/brands/create:
+    post:
+      tags: [Brands]
+      operationId: createBrand
+      summary: 브랜드 생성
+      description: 현재 생성 전용 화면은 없습니다. ADMIN 전용이 아닌 로그인 사용자 권한입니다. 이름은 DB에서 고유해야 합니다.
+      security:
+        - sessionAuth: []
+          csrfAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrandInput'
+            example: {name: Nike, origin: 'OREGON, US', foundedYear: 1964, category: SPORTSWEAR, officialUrl: 'https://nike.com', logoUrl: null}
+      responses:
+        '200':
+          description: 생성된 브랜드. 현재 구현의 성공 코드는 201이 아닌 200입니다.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Brand'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+  /api/releases:
+    get:
+      tags: [Releases]
+      operationId: listReleases
+      summary: 전체 또는 브랜드별 릴리즈 조회
+      description: brand를 생략하면 전체 조회합니다. 페이지 구분은 없습니다. 검색·상태·유형 필터는 현재 프론트에서 수행합니다.
+      security: []
+      parameters:
+        - name: brand
+          in: query
+          required: false
+          description: 브랜드 숫자 ID. 일치하는 릴리즈가 없으면 빈 배열을 반환합니다.
+          schema: {type: integer, format: int64}
+          example: 1
+      responses:
+        '200':
+          description: 릴리즈 목록
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Release'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+    post:
+      tags: [Releases]
+      operationId: createRelease
+      summary: 릴리즈 생성
+      description: 현재 생성 전용 화면은 없습니다. 로그인 사용자에게 허용됩니다. id는 자동 생성하며 status는 날짜로 계산합니다.
+      security:
+        - sessionAuth: []
+          csrfAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReleaseInput'
+            example:
+              brandId: 1
+              title: Autumn Drop
+              description: 컬렉션 안내
+              releaseType: DROP
+              releaseAt: '2026-09-20T11:00:00+09:00'
+              releaseDate: '2026-09-20'
+              dateLabel: 공식 온라인 발매
+              imageUrl: https://example.com/image.jpg
+              sourceUrl: https://example.com/release
+              crawledAt: '2026-09-10T10:00:00+09:00'
+      responses:
+        '200':
+          description: 생성된 릴리즈. 현재 구현의 성공 코드는 200입니다.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Release'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/ServerError'
+  /api/releases/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Releases]
+      operationId: getRelease
+      summary: 숫자 ID로 릴리즈 단건 조회
+      description: 상세 모달은 현재 목록 데이터를 재사용합니다. 없는 ID는 현재 서비스의 미처리 예외로 500을 반환합니다.
+      security: []
+      responses:
+        '200':
+          description: 릴리즈 정보
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Release'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/ServerError'
+  /api/me/follows:
+    get:
+      tags: [Follows]
+      operationId: listMyFollows
+      summary: 내 팔로우 브랜드 ID 목록
+      description: My Drop은 이 목록과 이미 조회한 릴리즈 데이터를 조합합니다.
+      responses:
+        '200':
+          description: 숫자 브랜드 ID 배열
+          content:
+            application/json:
+              schema:
+                type: array
+                uniqueItems: true
+                items: {type: integer, format: int64}
+              example: [1, 3, 4]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/me/follows/{brandId}:
+    parameters:
+      - name: brandId
+        in: path
+        required: true
+        description: 팔로우할 브랜드의 숫자 ID
+        schema: {type: integer, format: int64}
+    put:
+      tags: [Follows]
+      operationId: followBrand
+      summary: 브랜드 팔로우
+      description: 본문 없이 호출합니다. 같은 브랜드를 반복 팔로우해도 중복 저장하지 않습니다.
+      security:
+        - sessionAuth: []
+          csrfAuth: []
+      responses:
+        '204': {description: 팔로우 완료. 응답 본문 없음.}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Follows]
+      operationId: unfollowBrand
+      summary: 브랜드 언팔로우
+      description: 본문 없이 호출합니다. 해당 팔로우가 없어도 204를 반환합니다.
+      security:
+        - sessionAuth: []
+          csrfAuth: []
+      responses:
+        '204': {description: 언팔로우 완료. 응답 본문 없음.}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/brand/requests:
+    post:
+      tags: [Brand Requests]
+      operationId: createBrandRequest
+      summary: 브랜드 등록 요청 접수
+      description: 요청자는 로그인 사용자로 지정되고 초기 상태는 PENDING입니다. 요청 승인만으로 실제 브랜드가 생성되지는 않습니다.
+      security:
+        - sessionAuth: []
+          csrfAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrandRequestInput'
+            example: {brandName: Example, officialUrl: 'https://example.com', reason: 등록해주세요.}
+      responses:
+        '201':
+          description: 요청 접수 완료
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandRequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    get:
+      tags: [Brand Requests]
+      operationId: listMyBrandRequests
+      summary: 본인 브랜드 요청 목록 조회
+      description: 로그인 사용자의 요청만 최신순(createdAt DESC, id DESC)으로 조회합니다.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+      responses:
+        '200':
+          $ref: '#/components/responses/RequestPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/brand/admin/requests:
+    get:
+      tags: [Admin Requests]
+      operationId: listAllBrandRequests
+      summary: 관리자 전체 브랜드 요청 목록 조회
+      description: ADMIN 권한이 필요합니다. 모든 사용자의 요청을 최신순(createdAt DESC, id DESC)으로 조회합니다.
+      x-required-role: ADMIN
+      parameters:
+        - $ref: '#/components/parameters/Page'
+      responses:
+        '200':
+          $ref: '#/components/responses/RequestPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/brand/admin/requests/{id}/status:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    patch:
+      tags: [Admin Requests]
+      operationId: reviewBrandRequest
+      summary: 관리자 요청 승인 또는 거절
+      description: ADMIN 전용입니다. APPROVED 또는 REJECTED만 받으며 PENDING으로 되돌릴 수 없습니다. 승인과 거절 간 변경은 가능합니다. 상태만 변경하고 브랜드는 생성하지 않습니다.
+      x-required-role: ADMIN
+      security:
+        - sessionAuth: []
+          csrfAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: {type: string, enum: [APPROVED, REJECTED]}
+            examples:
+              approve:
+                value: {status: APPROVED}
+              reject:
+                value: {status: REJECTED}
+      responses:
+        '200':
+          description: 변경된 요청
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrandRequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  securitySchemes:
+    sessionAuth:
+      type: apiKey
+      in: cookie
+      name: JSESSIONID
+      description: POST /api/auth/login으로 생성한 서버 세션. 브라우저는 쿠키를 자동 전송합니다.
+    csrfAuth:
+      type: apiKey
+      in: header
+      name: X-CSRF-TOKEN
+      description: GET /api/auth/csrf에서 발급. 실제 응답의 headerName을 사용하고 같은 세션 쿠키를 유지합니다.
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      description: 대상 리소스의 숫자 ID
+      schema: {type: integer, format: int64}
+    Page:
+      name: page
+      in: query
+      required: false
+      description: 0부터 시작하는 페이지 번호. 고정 20개씩 반환합니다. page=0은 첫 20개, page=1은 다음 20개입니다. 범위 밖 페이지는 빈 items와 hasNext=false를 반환합니다.
+      schema: {type: integer, format: int32, minimum: 0, maximum: 100000, default: 0}
+  responses:
+    BadRequest:
+      description: 잘못된 JSON, 숫자/enum 형식 또는 요청 검증 실패
+    Unauthorized:
+      description: 로그인 세션 없음 또는 세션 사용자 계정이 존재하지 않음. 쓰기 요청에서 CSRF도 누락되면 먼저 403이 반환될 수 있습니다.
+    Forbidden:
+      description: 관리자 권한 부족 또는 CSRF 토큰 누락/불일치
+    NotFound:
+      description: 대상 브랜드 또는 요청을 찾을 수 없음
+    ServerError:
+      description: 미처리 서비스 예외 또는 DB 제약 위반. 현재 브랜드/릴리즈의 없는 ID, 생성 중 필수값 누락·중복 등은 별도 오류 코드로 변환되지 않습니다.
+    LoginBadRequest:
+      description: 로그인 입력 검증 또는 JSON 읽기 실패
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LoginError'
+    RequestPage:
+      description: 최대 20개의 요청과 다음 페이지 존재 여부
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/BrandRequestPage'
+          example:
+            items:
+              - id: 10
+                brandName: Example
+                officialUrl: https://example.com
+                reason: 등록해주세요.
+                requestedBy: alice
+                createdAt: '2026-09-10T10:00:00+09:00'
+                status: PENDING
+            hasNext: false
+  schemas:
+    UserRole:
+      type: string
+      enum: [USER, ADMIN]
+    BrandCategory:
+      type: string
+      enum: [STREETWEAR, SKATE_STREETWEAR, TECHNICAL_STREETWEAR, CASUAL_COLLABORATION, SPORTSWEAR, CONTEMPORARY, OTHER]
+    ReleaseType:
+      type: string
+      enum: [DROP, COLLAB, CAPSULE, SEASONAL, LIMITED, OTHER]
+    ReleaseStatus:
+      type: string
+      enum: [UPCOMING, RELEASED, UNKNOWN]
+      description: releaseAt이 있으면 현재 시각보다 미래일 때 UPCOMING, 아니면 RELEASED. 날짜만 있으면 한국 날짜 기준 어제 이전은 RELEASED, 오늘 이후는 UPCOMING. 둘 다 없으면 UNKNOWN.
+    RequestStatus:
+      type: string
+      enum: [PENDING, APPROVED, REJECTED]
+    LoginInput:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 1
+          description: 앞뒤 공백 제거 후 비어 있지 않아야 하며 최대 50자입니다.
+        password:
+          type: string
+          minLength: 1
+          writeOnly: true
+          description: UTF-8 기준 최대 72바이트. 문자 수 제한과 다릅니다.
+    SessionUser:
+      type: object
+      required: [username, role, admin]
+      properties:
+        username: {type: string}
+        role:
+          $ref: '#/components/schemas/UserRole'
+        admin: {type: boolean, description: 'role=ADMIN 여부를 나타내는 호환 필드'}
+    LoginResponse:
+      allOf:
+        - $ref: '#/components/schemas/SessionUser'
+        - type: object
+          required: [id]
+          properties:
+            id: {type: integer, format: int64}
+    LoginError:
+      type: object
+      required: [message]
+      properties:
+        message: {type: string}
+    BrandInput:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, maxLength: 100, description: DB에서 중복 불가}
+        origin: {type: string, nullable: true}
+        foundedYear: {type: integer, format: int32, nullable: true}
+        category:
+          allOf:
+            - $ref: '#/components/schemas/BrandCategory'
+          description: 생략 또는 null이면 OTHER로 저장합니다.
+          default: OTHER
+        officialUrl: {type: string, nullable: true}
+        logoUrl: {type: string, nullable: true}
+    Brand:
+      allOf:
+        - $ref: '#/components/schemas/BrandInput'
+        - type: object
+          required: [id, category]
+          properties:
+            id: {type: integer, format: int64, readOnly: true}
+    ReleaseFields:
+      type: object
+      required: [title, releaseType]
+      properties:
+        title: {type: string}
+        description: {type: string, nullable: true}
+        releaseType:
+          $ref: '#/components/schemas/ReleaseType'
+        releaseAt: {type: string, format: date-time, nullable: true, description: 오프셋을 포함한 발매 일시}
+        releaseDate: {type: string, format: date, nullable: true}
+        dateLabel: {type: string, nullable: true, description: 발매일 근거 또는 미확인 안내}
+        imageUrl: {type: string, nullable: true}
+        sourceUrl: {type: string, nullable: true}
+        crawledAt: {type: string, format: date-time, nullable: true}
+    ReleaseInput:
+      allOf:
+        - $ref: '#/components/schemas/ReleaseFields'
+        - type: object
+          required: [brandId]
+          properties:
+            brandId: {type: integer, format: int64}
+    Release:
+      allOf:
+        - $ref: '#/components/schemas/ReleaseFields'
+        - type: object
+          required: [id, brand, status]
+          properties:
+            id: {type: integer, format: int64, readOnly: true}
+            brand:
+              type: object
+              required: [id, name]
+              properties:
+                id: {type: integer, format: int64}
+                name: {type: string}
+            status:
+              $ref: '#/components/schemas/ReleaseStatus'
+    BrandRequestInput:
+      type: object
+      required: [brandName]
+      properties:
+        brandName: {type: string, minLength: 1, maxLength: 100, description: 앞뒤 공백 제거 후 비어 있으면 안 됩니다.}
+        officialUrl:
+          type: string
+          nullable: true
+          maxLength: 500
+          description: 생략/null은 빈 문자열로 저장. 입력 시 HTTP/HTTPS URL이어야 하며 호스트가 있어야 하고 사용자정보는 금지됩니다.
+        reason: {type: string, nullable: true, maxLength: 2000, description: 생략/null은 빈 문자열로 저장}
+    BrandRequest:
+      type: object
+      required: [id, brandName, officialUrl, reason, requestedBy, createdAt, status]
+      properties:
+        id: {type: integer, format: int64}
+        brandName: {type: string}
+        officialUrl: {type: string}
+        reason: {type: string}
+        requestedBy: {type: string, description: user_id 관계로 조회한 현재 사용자 이름}
+        createdAt: {type: string, format: date-time}
+        status:
+          $ref: '#/components/schemas/RequestStatus'
+    BrandRequestPage:
+      type: object
+      required: [items, hasNext]
+      properties:
+        items:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/BrandRequest'
+        hasNext: {type: boolean}
